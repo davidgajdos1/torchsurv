@@ -95,6 +95,7 @@ for data in dataloader:
 
 ```python
 from torchsurv.loss import Momentum
+
 my_model = MyPyTorchCoxModel()  
 my_loss = cox.neg_partial_log_likelihood  # Works with any TorchSurv loss
 momentum = Momentum(backbone=my_model, loss=my_loss)
@@ -115,7 +116,7 @@ The `TorchSurv` package offers a comprehensive set of metrics to evaluate the pr
 **AUC.** The AUC measures the discriminatory capacity of the survival model at a given time $t$, i.e., the ability to provide a reliable ranking of times-to-event based on estimated subject-specific risk scores [@Heagerty2005;@Uno2007;@Blanche2013].
 
 ```python
-from torchsurv.metrics import Auc
+from torchsurv.metrics.auc import Auc
 auc = Auc()
 auc(log_hzs, event, time)  # AUC at each time 
 auc(log_hzs, event, time, new_time=torch.tensor(10.))  # AUC at time 10
@@ -124,7 +125,7 @@ auc(log_hzs, event, time, new_time=torch.tensor(10.))  # AUC at time 10
 **C-index.** The C-index is a generalization of the AUC that represents the assessment of the discriminatory capacity of the survival model across the entire time period [@Harrell1996;@Uno_2011].
 
 ```python
-from torchsurv.metrics import ConcordanceIndex
+from torchsurv.metrics.cindex import ConcordanceIndex
 cindex = ConcordanceIndex()
 cindex(log_hzs, event, time)
 ```
@@ -132,7 +133,7 @@ cindex(log_hzs, event, time)
 **Brier Score.** The Brier score evaluates the accuracy of a model at a given time $t$ [@Graf_1999]. It represents the average squared distance between the observed survival status and the predicted survival probability. The Brier score cannot be obtained for the Cox proportional hazards model because the survival function is not available, but it can be obtained for the Weibull ATF model.
 
 ```python
-from torchsurv.metrics import Brier
+from torchsurv.metrics.brier_score import BrierScore
 surv = survival_function(log_params, time) 
 brier = Brier()
 brier(surv, event, time)  # Brier score at each time
@@ -146,6 +147,103 @@ cindex.confidence_interval()  # CI, default alpha=.05
 cindex.p_value(alternative='greater')  # pvalue, H0:c=0.5, HA:c>0.5
 cindex.compare(cindex_other)  # pvalue, H0:c1=c2, HA:c1>c2
 ```
+
+# Comprehensive Example: Fitting a Cox Proportional Hazards Model with TorchSurv
+
+In this section, we provide a comprehensive, reproducible code example to demonstrate how to use TorchSurv for fitting a Cox proportional hazards model. We generate 1,000 simulated observations, each associated with 10 features, a time-to-event that depends on these features and a time-to-censoring. The observable data will reflect only the minimum between the time-to-event and time-to-censoring, representing the first event that occurs. Subsequently, we fit a Cox proportional hazards model using maximum likelihood estimation and assess the model's predictive performance through the AUC and the concordance index. To facilitate rapid execution, we use a simple linear backend model in PyTorch to define the log relative hazards. Additionnally, we do not split the data into training, validation, and test sets. For more comprehensive examples using real data, we encourage readers to visit the Torchsurv website.
+
+
+
+```python
+import torch
+from torch.utils.data import DataLoader, Dataset
+from torchsurv.loss import cox
+from torchsurv.metrics.cindex import ConcordanceIndex
+from torchsurv.metrics.auc import Auc
+
+torch.manual_seed(42)
+
+# 1. Simulate 1000 data. Ensure that your data are formatted in the same way
+
+time_end = torch.tensor(2000)  # end of observational period
+n_sample = 1000  # number of observations
+n_feature = 10  # number of features
+
+x = torch.randn(n_sample, n_feature)  # 10 features for each observation
+weights = torch.randn(n_feature) * 50  # weights associated with the features
+
+event_time = 800 + x @ weights + torch.randn(n_sample) * 25  # event time
+censoring_time = torch.minimum(
+    torch.distributions.Exponential(0.000001).sample((n_sample,)), time_end
+)  # censoring time
+
+event = (event_time <= censoring_time).bool()  # event indicator
+time = torch.minimum(event_time, censoring_time)  # observed time
+
+# 2. Define the dataset class
+class TTEDataset(Dataset):
+    def __init__(self, x, event, time):
+        self.x = x
+        self.event = event
+        self.time = time
+
+    def __len__(self):
+        return len(self.event)
+
+    def __getitem__(self, index):
+        x = self.x[index]
+        event = self.event[index]
+        time = self.time[index]
+        return x, event, time
+
+
+# 3. Define the backbone model on the log hazards.
+class MyPyTorchCoxModel(torch.nn.Module):
+    def __init__(self):
+        super(MyPyTorchCoxModel, self).__init__()
+        self.fc = torch.nn.Linear(10, 1, bias=False) # simple linear model
+
+    def forward(self, x):
+        return self.fc(x)
+
+
+# 4. Instantiate the model, optimizer, dataset and dataloader
+cox_model = MyPyTorchCoxModel()
+optimizer = torch.optim.Adam(cox_model.parameters(), lr=0.01)
+
+dataset = TTEDataset(x, event, time)
+dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+
+# 5. Training loop
+for epoch in range(100):
+
+    for i, batch in enumerate(dataloader):
+        x, event, time = batch
+        optimizer.zero_grad()
+        log_hzs = cox_model(x)  # torch.Size([16, 1])
+        loss = cox.neg_partial_log_likelihood(
+            log_hzs, event, time, reduction="mean"
+        )  # use mean log-likelihood
+        loss.backward()
+        optimizer.step()
+
+# 6. Evaluate the model 
+log_hzs = cox_model(x)  # Trained log hazards
+
+# AUC at time point 800
+auc = Auc()
+auc(log_hzs, event, time, new_time=torch.tensor(800.0)) # tensor([0.8750])
+auc.confidence_interval() # tensor([0.6131, 1.0000])
+auc.p_value(alternative="greater") # tensor([0.0025])
+
+# C-index
+cindex = ConcordanceIndex()
+cindex(log_hzs, event, time) # tensor(0.9286)
+cindex.confidence_interval() # tensor([0.7306, 1.0000])
+cindex.p_value(alternative="greater") # tensor(1.1086e-05)
+```
+
+
 
 # Conflicts of interest
 

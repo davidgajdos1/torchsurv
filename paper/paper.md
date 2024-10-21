@@ -82,7 +82,7 @@ for data in dataloader:
 from torchsurv.loss import weibull
 
 # PyTorch model outputs TWO Weibull parameters per observation
-my_model = MyPyTorcWeibullhModel() 
+my_model = MyPyTorchWeibullhModel() 
 
 for data in dataloader:
     x, event, time = data
@@ -95,7 +95,7 @@ for data in dataloader:
 
 ```python
 from torchsurv.loss import Momentum
-my_model = MyPyTorchXCoxModel()  
+my_model = MyPyTorchCoxModel()  
 my_loss = cox.neg_partial_log_likelihood  # Works with any TorchSurv loss
 momentum = Momentum(backbone=my_model, loss=my_loss)
 
